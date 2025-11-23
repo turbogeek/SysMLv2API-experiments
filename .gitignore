@@ -24,13 +24,16 @@ diagnostics/*.log
 
 # Output files (may contain sensitive data)
 output/*.json
+output/*.sysml
 
 # Credentials and secrets
 *.pem
 *.key
 credentials.json
+credentials.properties
 secrets.json
 .env.local
+scripts/credentials.properties
 
 # OS files
 .DS_Store
