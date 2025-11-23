@@ -25,17 +25,48 @@ The SysMLv2 API provides a RESTful interface for interacting with SysML v2 model
 ```
 V2APIExperiments/
 ├── README.md
-├── scripts/           # API interaction scripts
+├── scripts/           # API interaction scripts (Groovy)
+│   ├── ListProjects.groovy           # List all available projects
+│   ├── GetProjectRequirements.groovy # Get requirements from a project
+│   └── SysMLv2ApiClient.groovy       # Interactive API client
 ├── examples/          # Example requests and responses
 ├── docs/              # Additional documentation
+├── output/            # Script output (JSON files)
+├── diagnostics/       # Diagnostic logs
 └── tests/             # Test scripts and validation
 ```
 
 ## Getting Started
 
-1. Ensure you have access to the SysMLv2 API endpoint (may require VPN/authentication)
-2. Configure your authentication credentials
-3. Run the example scripts to explore API capabilities
+### Prerequisites
+- Groovy 3.0+ installed
+- Access to the SysMLv2 API endpoint (may require VPN)
+- Valid username and password for the API
+
+### Running the Scripts
+
+**List all projects:**
+```bash
+cd scripts
+groovy ListProjects.groovy <username> <password>
+```
+
+**Get requirements from a specific project:**
+```bash
+groovy GetProjectRequirements.groovy <username> <password> <project-id>
+
+# Example:
+groovy GetProjectRequirements.groovy DBR2 'mypassword' a0be499b-3c33-45d2-96eb-d383a8900393
+```
+
+**Interactive API client:**
+```bash
+groovy SysMLv2ApiClient.groovy <username> <password>
+```
+
+### Output
+- Results are saved to `output/` as JSON files
+- Diagnostic logs are saved to `diagnostics/`
 
 ## Context7 Integration
 

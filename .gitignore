@@ -20,7 +20,10 @@ venv/
 # Logs and diagnostics
 *.log
 logs/
-diagnostics/
+diagnostics/*.log
+
+# Output files (may contain sensitive data)
+output/*.json
 
 # Credentials and secrets
 *.pem
