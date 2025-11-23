@@ -1,0 +1,40 @@
+# IDE files
+.idea/
+.vscode/
+*.iml
+
+# Build outputs
+build/
+target/
+out/
+*.class
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+venv/
+.venv/
+
+# Logs and diagnostics
+*.log
+logs/
+diagnostics/
+
+# Credentials and secrets
+*.pem
+*.key
+credentials.json
+secrets.json
+.env.local
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*~
