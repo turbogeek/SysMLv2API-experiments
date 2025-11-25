@@ -1,0 +1,28 @@
+Small Project Test Report
+Generated: Tue Nov 25 11:05:24 CST 2025
+
+Projects Tested: 15
+Successful: 2
+Failed: 13
+
+Working Projects:
+  3DS SysML Customization (1 commits, 4 roots)
+  Standard Libraries1 (1 commits, 94 roots)
+
+Failed Projects:
+  Views and Viewpoints: No commits
+  WMS_with_SysMLv2_and_MagicGrid: No commits
+  Sample Questions: No commits
+  Satisfied Requirements: Root loading failed
+  Units: No commits
+  Symbol Styles: Root loading failed
+  Actions: No commits
+  WMS_M9: No commits
+  Use Cases Edited: No commits
+  SAR Drone Problem Domain Sample - M4: No commits
+  MagicGrid - VehicleCCU Problem Domain: Root loading failed
+  Tool Fundamentals: No commits
+  Requirements1: No commits
+
+Recommendation:
+Use one of the working projects listed above for testing and development.
