@@ -247,6 +247,11 @@ class SysMLv2ExplorerFrame extends JFrame {
         commitCombo.addActionListener { onCommitSelected() }
         toolbarPanel.add(commitCombo)
 
+        JButton loadAllBtn = new JButton("Load All")
+        loadAllBtn.toolTipText = "Recursively load all elements in tree"
+        loadAllBtn.addActionListener { loadAllElements() }
+        toolbarPanel.add(loadAllBtn)
+
         JButton refreshBtn = new JButton("Refresh")
         refreshBtn.addActionListener { refreshCurrentProject() }
         toolbarPanel.add(refreshBtn)
@@ -952,6 +957,93 @@ class SysMLv2ExplorerFrame extends JFrame {
         if (currentProjectId) {
             loadProjectElements(currentProjectId)
         }
+    }
+
+    /**
+     * Load all elements recursively in a background worker
+     */
+    void loadAllElements() {
+        if (!currentProjectId || !currentCommitId) {
+            JOptionPane.showMessageDialog(this, "Please select a project first",
+                "No Project", JOptionPane.WARNING_MESSAGE)
+            return
+        }
+
+        int response = JOptionPane.showConfirmDialog(this,
+            "This will load all elements recursively.\nThis may take some time for large projects.\nContinue?",
+            "Load All Elements",
+            JOptionPane.YES_NO_OPTION,
+            JOptionPane.QUESTION_MESSAGE)
+
+        if (response != JOptionPane.YES_OPTION) {
+            return
+        }
+
+        setStatus("Loading all elements...")
+        logDiagnostic("Starting full recursive load")
+
+        SwingWorker worker = new SwingWorker<Integer, String>() {
+            int loadedCount = 0
+
+            @Override
+            protected Integer doInBackground() {
+                def root = treeModel.root
+                if (root) {
+                    loadAllChildrenRecursively(root)
+                }
+                return loadedCount
+            }
+
+            void loadAllChildrenRecursively(TreeNode node) {
+                if (node instanceof ElementTreeNode) {
+                    ElementTreeNode eNode = (ElementTreeNode) node
+
+                    // Check if children need to be loaded
+                    if (eNode.childCount == 1 && eNode.getChildAt(0).toString() == "Loading...") {
+                        eNode.removeAllChildren()
+                        loadNodeChildren(eNode)
+                        loadedCount++
+                        publish("Loaded ${loadedCount} nodes...")
+                    }
+
+                    // Recursively load children
+                    for (int i = 0; i < eNode.childCount; i++) {
+                        loadAllChildrenRecursively(eNode.getChildAt(i))
+                    }
+                } else {
+                    // For non-ElementTreeNode, still recurse through children
+                    for (int i = 0; i < node.childCount; i++) {
+                        loadAllChildrenRecursively(node.getChildAt(i))
+                    }
+                }
+            }
+
+            @Override
+            protected void process(List<String> chunks) {
+                if (!chunks.isEmpty()) {
+                    setStatus(chunks.last())
+                }
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    int count = get()
+                    treeModel.reload()
+                    setStatus("Loaded all elements: ${count} nodes expanded, ${elementCache.size()} total elements")
+                    logDiagnostic("Full recursive load complete: ${count} nodes, ${elementCache.size()} elements cached")
+
+                    // Optionally expand all after loading
+                    expandAllNodes()
+                } catch (Exception e) {
+                    setStatus("Error loading all elements")
+                    logError("loadAllElements", e)
+                    showErrorDialog(SysMLv2ExplorerFrame.this, "Load All Error",
+                        "Failed to load all elements.", e)
+                }
+            }
+        }
+        worker.execute()
     }
 
     void expandAllNodes() {
