@@ -193,6 +193,10 @@ class SysMLv2ExplorerFrame extends JFrame {
         exportItem.addActionListener { exportToFile() }
         fileMenu.add(exportItem)
 
+        JMenuItem exportHtmlItem = new JMenuItem("Export to HTML...", KeyEvent.VK_H)
+        exportHtmlItem.addActionListener { exportToHTML() }
+        fileMenu.add(exportHtmlItem)
+
         fileMenu.addSeparator()
 
         JMenuItem exitItem = new JMenuItem("Exit", KeyEvent.VK_X)
@@ -1542,6 +1546,268 @@ class SysMLv2ExplorerFrame extends JFrame {
 
         setStatus("Commit comparison complete")
         logDiagnostic("Commit diff shown: ${added.size()} added, ${removed.size()} removed, ${modified.size()} modified")
+    }
+
+    void exportToHTML() {
+        if (!currentProjectId) {
+            JOptionPane.showMessageDialog(this, "Please select a project first",
+                "No Project", JOptionPane.WARNING_MESSAGE)
+            return
+        }
+
+        if (elementCache.isEmpty()) {
+            JOptionPane.showMessageDialog(this,
+                "Please load a project first.\nUse 'Load All' button to load all elements for complete export.",
+                "No Elements Loaded", JOptionPane.WARNING_MESSAGE)
+            return
+        }
+
+        // Choose file location
+        JFileChooser fileChooser = new JFileChooser()
+        fileChooser.dialogTitle = "Export Project to HTML"
+        fileChooser.selectedFile = new File("sysml_export_${currentProjectId.take(8)}.html")
+
+        int result = fileChooser.showSaveDialog(this)
+        if (result != JFileChooser.APPROVE_OPTION) {
+            return
+        }
+
+        File outputFile = fileChooser.selectedFile
+        setStatus("Exporting to HTML...")
+        logDiagnostic("Exporting ${elementCache.size()} elements to ${outputFile.absolutePath}")
+
+        SwingWorker worker = new SwingWorker<Boolean, Void>() {
+            @Override
+            protected Boolean doInBackground() {
+                try {
+                    generateHTMLExport(outputFile)
+                    return true
+                } catch (Exception e) {
+                    logError("exportToHTML", e)
+                    return false
+                }
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    boolean success = get()
+                    if (success) {
+                        setStatus("HTML export complete: ${outputFile.name}")
+                        int response = JOptionPane.showConfirmDialog(SysMLv2ExplorerFrame.this,
+                            "Export completed successfully!\n\nOpen HTML file in browser?",
+                            "Export Complete",
+                            JOptionPane.YES_NO_OPTION,
+                            JOptionPane.INFORMATION_MESSAGE)
+
+                        if (response == JOptionPane.YES_OPTION) {
+                            java.awt.Desktop.desktop.browse(outputFile.toURI())
+                        }
+                    } else {
+                        setStatus("HTML export failed")
+                        JOptionPane.showMessageDialog(SysMLv2ExplorerFrame.this,
+                            "Failed to export HTML. Check diagnostic log for details.",
+                            "Export Failed",
+                            JOptionPane.ERROR_MESSAGE)
+                    }
+                } catch (Exception e) {
+                    setStatus("Error in HTML export")
+                    logError("exportToHTML.done", e)
+                }
+            }
+        }
+        worker.execute()
+    }
+
+    void generateHTMLExport(File outputFile) {
+        // Build HTML with navigation
+        StringBuilder html = new StringBuilder()
+
+        html.append("""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SysML v2 Project Export</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; font-size: 14px; line-height: 1.6; }
+        .container { display: flex; height: 100vh; }
+        .sidebar { width: 300px; background: #2c3e50; color: #ecf0f1; overflow-y: auto; }
+        .content { flex: 1; padding: 20px; overflow-y: auto; background: #f5f5f5; }
+        .header { background: #34495e; padding: 15px; border-bottom: 2px solid #1abc9c; }
+        .header h1 { font-size: 18px; color: #1abc9c; }
+        .header p { font-size: 12px; color: #95a5a6; margin-top: 5px; }
+        .nav-tree { padding: 10px; }
+        .nav-item { padding: 8px 12px; cursor: pointer; border-left: 3px solid transparent; transition: all 0.2s; }
+        .nav-item:hover { background: #34495e; border-left-color: #1abc9c; }
+        .nav-item.active { background: #34495e; border-left-color: #e74c3c; }
+        .nav-item-label { display: block; color: #ecf0f1; text-decoration: none; }
+        .nav-item-type { font-size: 11px; color: #95a5a6; margin-left: 5px; }
+        .element-card { background: white; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .element-title { font-size: 24px; color: #2c3e50; margin-bottom: 5px; }
+        .element-type { display: inline-block; background: #3498db; color: white; padding: 4px 12px; border-radius: 4px; font-size: 12px; margin-bottom: 15px; }
+        .element-id { font-size: 12px; color: #7f8c8d; font-family: monospace; margin-bottom: 15px; }
+        .property-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        .property-table th { background: #ecf0f1; padding: 10px; text-align: left; border-bottom: 2px solid #bdc3c7; }
+        .property-table td { padding: 10px; border-bottom: 1px solid #ecf0f1; }
+        .property-table tr:hover { background: #f8f9fa; }
+        .property-key { font-weight: 600; color: #2c3e50; width: 30%; }
+        .property-value { color: #34495e; font-family: 'Courier New', monospace; font-size: 13px; }
+        .search-box { padding: 10px; background: #34495e; }
+        .search-box input { width: 100%; padding: 8px; border: none; border-radius: 4px; background: #ecf0f1; }
+        .stats { background: #e8f4f8; border-left: 4px solid #3498db; padding: 15px; border-radius: 4px; margin-bottom: 20px; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+        .stat-item { text-align: center; }
+        .stat-value { font-size: 24px; font-weight: bold; color: #3498db; }
+        .stat-label { font-size: 12px; color: #7f8c8d; text-transform: uppercase; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="sidebar">
+            <div class="header">
+                <h1>SysML v2 Export</h1>
+                <p>Project: ${currentProjectId.take(8)}...</p>
+                <p>Commit: ${currentCommitId.take(8)}...</p>
+            </div>
+            <div class="search-box">
+                <input type="text" id="searchBox" placeholder="Search elements..." onkeyup="filterElements()">
+            </div>
+            <div class="nav-tree" id="navTree">
+""")
+
+        // Add navigation items
+        elementCache.each { id, element ->
+            String name = element['name'] ?: element['declaredName'] ?: id.take(8)
+            String type = element['@type'] ?: 'Unknown'
+            String shortType = type.tokenize('.')[-1] // Get last part after dot
+
+            html.append("""                <div class="nav-item" onclick="showElement('${id}')">
+                    <span class="nav-item-label">${escapeHtml(name)}</span>
+                    <span class="nav-item-type">${escapeHtml(shortType)}</span>
+                </div>
+""")
+        }
+
+        html.append("""            </div>
+        </div>
+        <div class="content" id="content">
+            <div class="stats">
+                <h2 style="margin-bottom: 15px; color: #2c3e50;">Project Statistics</h2>
+                <div class="stats-grid">
+""")
+
+        // Calculate statistics
+        Map<String, Integer> typeCounts = [:]
+        elementCache.each { id, element ->
+            String type = element['@type'] ?: 'Unknown'
+            typeCounts[type] = (typeCounts[type] ?: 0) + 1
+        }
+
+        html.append("""                    <div class="stat-item">
+                        <div class="stat-value">${elementCache.size()}</div>
+                        <div class="stat-label">Total Elements</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">${typeCounts.size()}</div>
+                        <div class="stat-label">Element Types</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">${new java.text.SimpleDateFormat('yyyy-MM-dd').format(new Date())}</div>
+                        <div class="stat-label">Export Date</div>
+                    </div>
+""")
+
+        html.append("""                </div>
+            </div>
+            <p style="color: #7f8c8d; text-align: center; margin-top: 50px;">Select an element from the sidebar to view details</p>
+        </div>
+    </div>
+
+    <script>
+        const elements = {
+""")
+
+        // Add element data as JavaScript
+        elementCache.eachWithIndex { entry, index ->
+            String id = entry.key
+            Map element = entry.value
+
+            String name = element['name'] ?: element['declaredName'] ?: id.take(8)
+            String type = element['@type'] ?: 'Unknown'
+
+            html.append("            '${id}': ${groovy.json.JsonOutput.toJson(element)}")
+            if (index < elementCache.size() - 1) {
+                html.append(",\n")
+            } else {
+                html.append("\n")
+            }
+        }
+
+        html.append("""        };
+
+        function showElement(id) {
+            const element = elements[id];
+            if (!element) return;
+
+            const name = element.name || element.declaredName || id.substring(0, 8);
+            const type = element['@type'] || 'Unknown';
+            const shortType = type.split('.').pop();
+
+            let html = '<div class="element-card">';
+            html += '<h1 class="element-title">' + escapeHtml(name) + '</h1>';
+            html += '<span class="element-type">' + escapeHtml(shortType) + '</span>';
+            html += '<div class="element-id">ID: ' + escapeHtml(id) + '</div>';
+            html += '<table class="property-table"><thead><tr><th>Property</th><th>Value</th></tr></thead><tbody>';
+
+            for (const [key, value] of Object.entries(element)) {
+                if (key === '@type' || key === '@id') continue;
+                const valueStr = typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value);
+                html += '<tr><td class="property-key">' + escapeHtml(key) + '</td>';
+                html += '<td class="property-value">' + escapeHtml(valueStr) + '</td></tr>';
+            }
+
+            html += '</tbody></table></div>';
+            document.getElementById('content').innerHTML = html;
+
+            // Update active nav item
+            document.querySelectorAll('.nav-item').forEach(item => item.classList.remove('active'));
+            event.currentTarget.classList.add('active');
+        }
+
+        function filterElements() {
+            const searchText = document.getElementById('searchBox').value.toLowerCase();
+            const navItems = document.querySelectorAll('.nav-item');
+
+            navItems.forEach(item => {
+                const text = item.textContent.toLowerCase();
+                item.style.display = text.includes(searchText) ? 'block' : 'none';
+            });
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+</html>
+""")
+
+        // Write to file
+        outputFile.text = html.toString()
+        logDiagnostic("HTML export complete: ${outputFile.absolutePath}, ${elementCache.size()} elements")
+    }
+
+    String escapeHtml(String text) {
+        if (!text) return ''
+        return text.replace('&', '&amp;')
+                   .replace('<', '&lt;')
+                   .replace('>', '&gt;')
+                   .replace('"', '&quot;')
+                   .replace("'", '&#39;')
     }
 
     void showAboutDialog() {
