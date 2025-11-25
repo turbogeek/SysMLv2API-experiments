@@ -126,6 +126,7 @@ class SysMLv2ExplorerFrame extends JFrame {
     String currentProjectId
     String currentCommitId
     Map<String, Map> elementCache = [:]
+    boolean allowProjectSelection = false  // Prevent auto-load on startup
 
     // UI Components
     JComboBox<ProjectItem> projectCombo
@@ -442,6 +443,7 @@ class SysMLv2ExplorerFrame extends JFrame {
                     }
                     setStatus("Loaded ${projects.size()} projects")
                     logDiagnostic("Projects loaded successfully")
+                    allowProjectSelection = true  // Enable user selections now
                 } catch (Exception e) {
                     setStatus("Error loading projects")
                     showErrorDialog(SysMLv2ExplorerFrame.this, "Load Projects Error",
@@ -453,6 +455,9 @@ class SysMLv2ExplorerFrame extends JFrame {
     }
 
     void onProjectSelected() {
+        if (!allowProjectSelection) {
+            return  // Skip auto-load during initialization
+        }
         ProjectItem selected = projectCombo.selectedItem as ProjectItem
         if (selected) {
             loadProjectElements(selected.id)
