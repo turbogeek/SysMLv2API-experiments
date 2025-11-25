@@ -21,15 +21,18 @@
 @Grab('org.apache.httpcomponents:httpclient:4.5.14')
 @Grab('org.apache.httpcomponents:httpcore:4.4.16')
 @Grab('com.google.code.gson:gson:2.10.1')
+@Grab('org.codehaus.gpars:gpars:1.2.1')
 
 import org.apache.http.client.methods.*
 import org.apache.http.impl.client.*
 import org.apache.http.auth.*
 import org.apache.http.conn.ssl.*
 import org.apache.http.ssl.*
+import org.apache.http.client.config.RequestConfig
 import javax.net.ssl.*
 import java.security.cert.X509Certificate
 import com.google.gson.*
+import groovyx.gpars.GParsPool
 
 import javax.swing.*
 import javax.swing.tree.*
@@ -399,10 +402,22 @@ class SysMLv2ExplorerFrame extends JFrame {
         def credentialsProvider = new BasicCredentialsProvider()
         credentialsProvider.setCredentials(AuthScope.ANY, new UsernamePasswordCredentials(username, password))
 
+        // Configure timeouts to prevent hangs
+        RequestConfig requestConfig = RequestConfig.custom()
+            .setConnectTimeout(30000)           // 30 sec connection timeout
+            .setSocketTimeout(60000)            // 60 sec socket timeout
+            .setConnectionRequestTimeout(5000)  // 5 sec from pool timeout
+            .build()
+
         httpClient = HttpClients.custom()
             .setSSLSocketFactory(sslSocketFactory)
             .setDefaultCredentialsProvider(credentialsProvider)
+            .setDefaultRequestConfig(requestConfig)
+            .setMaxConnPerRoute(20)             // Connection pooling
+            .setMaxConnTotal(50)
             .build()
+
+        logDiagnostic("HTTP client initialized with timeouts: connect=30s, socket=60s, pool=5s")
     }
 
     Map apiGet(String endpoint) {
@@ -473,15 +488,28 @@ class SysMLv2ExplorerFrame extends JFrame {
                     logDiagnostic("Received ${projects?.size() ?: 0} projects")
                     projectCombo.removeAllItems()
 
-                    // Check accessibility for each project by attempting to get commits
-                    projects.each { p ->
-                        String projectId = p['@id'] as String
-                        String projectName = p['name'] as String
-                        boolean accessible = checkProjectAccessibility(projectId)
-                        projectCombo.addItem(new ProjectItem(projectId, projectName, accessible))
+                    // Check accessibility for each project in parallel for faster startup
+                    long startTime = System.currentTimeMillis()
+                    logDiagnostic("Starting parallel accessibility checks for ${projects.size()} projects...")
+
+                    def projectItems = Collections.synchronizedList([])
+
+                    GParsPool.withPool(10) {  // 10 concurrent threads
+                        projects.eachParallel { p ->
+                            String projectId = p['@id'] as String
+                            String projectName = p['name'] as String
+                            boolean accessible = checkProjectAccessibility(projectId)
+                            projectItems << new ProjectItem(projectId, projectName, accessible)
+                        }
                     }
 
-                    setStatus("Loaded ${projects.size()} projects")
+                    long elapsed = System.currentTimeMillis() - startTime
+                    logDiagnostic("Parallel accessibility checks completed in ${elapsed}ms (${projects.size()} projects)")
+
+                    // Add all items to combo box
+                    projectItems.each { projectCombo.addItem(it) }
+
+                    setStatus("Loaded ${projects.size()} projects (${elapsed}ms)")
                     logDiagnostic("Projects loaded successfully")
                     allowProjectSelection = true  // Enable user selections now
                 } catch (Exception e) {
