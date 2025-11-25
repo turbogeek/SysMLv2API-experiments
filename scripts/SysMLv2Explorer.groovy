@@ -130,6 +130,7 @@ class SysMLv2ExplorerFrame extends JFrame {
 
     // UI Components
     JComboBox<ProjectItem> projectCombo
+    JComboBox<CommitItem> commitCombo
     JTree elementTree
     DefaultTreeModel treeModel
     JTextArea propertiesArea
@@ -137,6 +138,7 @@ class SysMLv2ExplorerFrame extends JFrame {
     JLabel statusLabel
     JSplitPane mainSplit
     JSplitPane rightSplit
+    List<Map> currentCommits = []  // Store commits for current project
 
     SysMLv2ExplorerFrame(String username = null, String password = null) {
         super("SysML v2 Explorer")
@@ -232,9 +234,18 @@ class SysMLv2ExplorerFrame extends JFrame {
         toolbarPanel.add(new JLabel("Project:"))
 
         projectCombo = new JComboBox<>()
-        projectCombo.preferredSize = new Dimension(400, 25)
+        projectCombo.preferredSize = new Dimension(350, 25)
+        projectCombo.renderer = new ProjectComboRenderer()
         projectCombo.addActionListener { onProjectSelected() }
         toolbarPanel.add(projectCombo)
+
+        toolbarPanel.add(new JLabel("  Commit:"))
+
+        commitCombo = new JComboBox<>()
+        commitCombo.preferredSize = new Dimension(300, 25)
+        commitCombo.enabled = false  // Disabled until project selected
+        commitCombo.addActionListener { onCommitSelected() }
+        toolbarPanel.add(commitCombo)
 
         JButton refreshBtn = new JButton("Refresh")
         refreshBtn.addActionListener { refreshCurrentProject() }
@@ -438,9 +449,15 @@ class SysMLv2ExplorerFrame extends JFrame {
                     ArrayList projects = get()
                     logDiagnostic("Received ${projects?.size() ?: 0} projects")
                     projectCombo.removeAllItems()
+
+                    // Check accessibility for each project by attempting to get commits
                     projects.each { p ->
-                        projectCombo.addItem(new ProjectItem(p['@id'] as String, p['name'] as String))
+                        String projectId = p['@id'] as String
+                        String projectName = p['name'] as String
+                        boolean accessible = checkProjectAccessibility(projectId)
+                        projectCombo.addItem(new ProjectItem(projectId, projectName, accessible))
                     }
+
                     setStatus("Loaded ${projects.size()} projects")
                     logDiagnostic("Projects loaded successfully")
                     allowProjectSelection = true  // Enable user selections now
@@ -454,30 +471,119 @@ class SysMLv2ExplorerFrame extends JFrame {
         worker.execute()
     }
 
+    /**
+     * Check if a project is accessible by trying to fetch its commits
+     */
+    boolean checkProjectAccessibility(String projectId) {
+        try {
+            def request = new HttpGet("${BASE_URL}/projects/${projectId}/commits")
+            request.setHeader("Accept", "application/json")
+            def response = httpClient.execute(request)
+            int statusCode = response.statusLine.statusCode
+            response.close()
+            return statusCode == 200
+        } catch (Exception e) {
+            return false
+        }
+    }
+
     void onProjectSelected() {
         if (!allowProjectSelection) {
             return  // Skip auto-load during initialization
         }
         ProjectItem selected = projectCombo.selectedItem as ProjectItem
         if (selected) {
-            loadProjectElements(selected.id)
+            if (!selected.accessible) {
+                setStatus("Project ${selected.name} is not accessible")
+                commitCombo.removeAllItems()
+                commitCombo.enabled = false
+                treeModel.setRoot(new DefaultMutableTreeNode("Project Not Accessible"))
+                return
+            }
+            loadCommitsForProject(selected.id)
         }
     }
 
-    void loadProjectElements(String projectId) {
+    /**
+     * Load commits for the selected project and populate commit dropdown
+     */
+    void loadCommitsForProject(String projectId) {
+        setStatus("Loading commits...")
+        commitCombo.removeAllItems()
+        commitCombo.enabled = false
+
+        SwingWorker worker = new SwingWorker<ArrayList, Void>() {
+            @Override
+            protected ArrayList doInBackground() {
+                return apiGetList("/projects/${projectId}/commits") as ArrayList
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    ArrayList commits = get()
+                    logDiagnostic("Received ${commits?.size() ?: 0} commits for project ${projectId}")
+                    currentCommits = commits
+
+                    if (commits && !commits.isEmpty()) {
+                        // Latest commit is at the end of the list
+                        commits.eachWithIndex { commit, index ->
+                            String commitId = commit['@id'] as String
+                            String timestamp = commit['timestamp'] ?: commit['created'] ?: 'Unknown date'
+                            boolean isLatest = (index == commits.size() - 1)
+                            commitCombo.addItem(new CommitItem(commitId, timestamp, isLatest))
+                        }
+
+                        // Select the latest commit by default
+                        commitCombo.setSelectedIndex(commits.size() - 1)
+                        commitCombo.enabled = true
+                        setStatus("Loaded ${commits.size()} commits")
+                    } else {
+                        setStatus("No commits found for project")
+                        commitCombo.addItem(new CommitItem('none', 'No commits available', false))
+                    }
+                } catch (Exception e) {
+                    setStatus("Error loading commits")
+                    logError("loadCommitsForProject", e)
+                    showErrorDialog(SysMLv2ExplorerFrame.this, "Load Commits Error",
+                        "Failed to load commits for project.", e)
+                }
+            }
+        }
+        worker.execute()
+    }
+
+    /**
+     * Handler for commit selection - loads elements for the selected commit
+     */
+    void onCommitSelected() {
+        CommitItem selected = commitCombo.selectedItem as CommitItem
+        if (selected && selected.id != 'none') {
+            ProjectItem project = projectCombo.selectedItem as ProjectItem
+            if (project) {
+                loadProjectElements(project.id, selected.id)
+            }
+        }
+    }
+
+    void loadProjectElements(String projectId, String commitId = null) {
         currentProjectId = projectId
         elementCache.clear()
         setStatus("Loading project elements...")
 
         SwingWorker worker = new SwingWorker<Void, Void>() {
-            List commits
             List roots
+            String useCommitId = commitId
 
             @Override
             protected Void doInBackground() {
-                commits = apiGetList("/projects/${projectId}/commits")
-                if (commits) {
-                    currentCommitId = commits[-1]['@id']
+                // If no commit specified, use the latest from currentCommits
+                if (!useCommitId && currentCommits && !currentCommits.isEmpty()) {
+                    useCommitId = currentCommits[-1]['@id']
+                }
+
+                if (useCommitId) {
+                    currentCommitId = useCommitId
                     roots = apiGetList("/projects/${projectId}/commits/${currentCommitId}/roots")
                 }
                 return null
@@ -489,13 +595,14 @@ class SysMLv2ExplorerFrame extends JFrame {
                     get()
                     if (roots) {
                         buildTree(roots)
-                        setStatus("Loaded project - Commit: ${commits[-1]['name']}")
+                        String commitLabel = useCommitId?.take(8) ?: 'Unknown'
+                        setStatus("Loaded project - Commit: ${commitLabel}...")
                     } else {
                         setStatus("No elements found in project")
                     }
                 } catch (Exception e) {
                     setStatus("Error: ${e.message}")
-                    e.printStackTrace()
+                    logError("loadProjectElements", e)
                 }
             }
         }
@@ -916,15 +1023,59 @@ Features:
     static class ProjectItem {
         String id
         String name
+        boolean accessible = true  // Assume accessible until proven otherwise
 
-        ProjectItem(String id, String name) {
+        ProjectItem(String id, String name, boolean accessible = true) {
             this.id = id
             this.name = name
+            this.accessible = accessible
         }
 
         @Override
         String toString() {
             return "${name} (${id.take(8)}...)"
+        }
+    }
+
+    static class CommitItem {
+        String id
+        String timestamp
+        boolean isLatest = false
+
+        CommitItem(String id, String timestamp, boolean isLatest = false) {
+            this.id = id
+            this.timestamp = timestamp
+            this.isLatest = isLatest
+        }
+
+        @Override
+        String toString() {
+            String label = "${timestamp} (${id.take(8)}...)"
+            return isLatest ? "${label} [LATEST]" : label
+        }
+    }
+
+    /**
+     * Custom renderer for project combo box that shows red indicator for inaccessible projects
+     */
+    static class ProjectComboRenderer extends DefaultListCellRenderer {
+        @Override
+        Component getListCellRendererComponent(JList list, Object value, int index,
+                                                boolean isSelected, boolean cellHasFocus) {
+            Component comp = super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus)
+
+            if (value instanceof ProjectItem) {
+                ProjectItem item = (ProjectItem) value
+                if (!item.accessible) {
+                    // Red text for inaccessible projects
+                    comp.foreground = Color.RED
+                    if (comp instanceof JLabel) {
+                        ((JLabel) comp).text = "\u26D4 ${item.toString()}"  // Add red circle icon
+                    }
+                }
+            }
+
+            return comp
         }
     }
 
