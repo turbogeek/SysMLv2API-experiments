@@ -405,7 +405,7 @@ class SysMLv2ExplorerFrame extends JFrame {
         // Configure timeouts to prevent hangs
         RequestConfig requestConfig = RequestConfig.custom()
             .setConnectTimeout(30000)           // 30 sec connection timeout
-            .setSocketTimeout(60000)            // 60 sec socket timeout
+            .setSocketTimeout(180000)           // 180 sec (3 min) socket timeout for slow endpoints
             .setConnectionRequestTimeout(5000)  // 5 sec from pool timeout
             .build()
 
@@ -417,7 +417,7 @@ class SysMLv2ExplorerFrame extends JFrame {
             .setMaxConnTotal(50)
             .build()
 
-        logDiagnostic("HTTP client initialized with timeouts: connect=30s, socket=60s, pool=5s")
+        logDiagnostic("HTTP client initialized with timeouts: connect=30s, socket=180s, pool=5s")
     }
 
     Map apiGet(String endpoint) {
