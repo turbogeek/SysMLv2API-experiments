@@ -222,6 +222,10 @@ class SysMLv2ExplorerFrame extends JFrame {
         traceItem.addActionListener { showTraceabilityMatrix() }
         viewMenu.add(traceItem)
 
+        JMenuItem diffItem = new JMenuItem("Commit Diff Viewer...", KeyEvent.VK_D)
+        diffItem.addActionListener { showCommitDiffViewer() }
+        viewMenu.add(diffItem)
+
         menuBar.add(viewMenu)
 
         JMenu helpMenu = new JMenu("Help")
@@ -1304,6 +1308,240 @@ class SysMLv2ExplorerFrame extends JFrame {
 
         setStatus("Traceability analysis complete")
         logDiagnostic("Traceability matrix shown: ${relationships.size()} relationships")
+    }
+
+    void showCommitDiffViewer() {
+        if (!currentProjectId) {
+            JOptionPane.showMessageDialog(this, "Please select a project first",
+                "No Project", JOptionPane.WARNING_MESSAGE)
+            return
+        }
+
+        if (currentCommits.size() < 2) {
+            JOptionPane.showMessageDialog(this,
+                "Project must have at least 2 commits to compare.\nThis project has ${currentCommits.size()} commit(s).",
+                "Insufficient Commits", JOptionPane.WARNING_MESSAGE)
+            return
+        }
+
+        // Create dialog for selecting two commits
+        JDialog dialog = new JDialog(this, "Select Commits to Compare", true)
+        dialog.layout = new BorderLayout(10, 10)
+
+        JPanel panel = new JPanel(new GridBagLayout())
+        GridBagConstraints gbc = new GridBagConstraints()
+        gbc.insets = new Insets(5, 5, 5, 5)
+        gbc.fill = GridBagConstraints.HORIZONTAL
+
+        // First commit selector
+        gbc.gridx = 0
+        gbc.gridy = 0
+        panel.add(new JLabel("Base Commit:"), gbc)
+
+        JComboBox<CommitItem> commit1Combo = new JComboBox<>()
+        currentCommits.each { commit1Combo.addItem(new CommitItem(commit['@id'], commit['timestamp'] ?: 'No timestamp', false)) }
+        commit1Combo.selectedIndex = Math.max(0, currentCommits.size() - 2) // Second most recent
+        gbc.gridx = 1
+        gbc.weightx = 1.0
+        panel.add(commit1Combo, gbc)
+
+        // Second commit selector
+        gbc.gridx = 0
+        gbc.gridy = 1
+        gbc.weightx = 0
+        panel.add(new JLabel("Compare Commit:"), gbc)
+
+        JComboBox<CommitItem> commit2Combo = new JComboBox<>()
+        currentCommits.each { commit2Combo.addItem(new CommitItem(commit['@id'], commit['timestamp'] ?: 'No timestamp', false)) }
+        commit2Combo.selectedIndex = 0 // Most recent
+        gbc.gridx = 1
+        gbc.weightx = 1.0
+        panel.add(commit2Combo, gbc)
+
+        // Buttons
+        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT))
+        JButton compareBtn = new JButton("Compare")
+        JButton cancelBtn = new JButton("Cancel")
+
+        boolean[] shouldCompare = [false]
+
+        compareBtn.addActionListener {
+            shouldCompare[0] = true
+            dialog.dispose()
+        }
+
+        cancelBtn.addActionListener {
+            dialog.dispose()
+        }
+
+        buttonPanel.add(compareBtn)
+        buttonPanel.add(cancelBtn)
+
+        dialog.add(panel, BorderLayout.CENTER)
+        dialog.add(buttonPanel, BorderLayout.SOUTH)
+        dialog.pack()
+        dialog.setLocationRelativeTo(this)
+        dialog.visible = true
+
+        if (!shouldCompare[0]) {
+            return
+        }
+
+        // Get selected commits
+        CommitItem commit1 = commit1Combo.selectedItem
+        CommitItem commit2 = commit2Combo.selectedItem
+
+        if (commit1.id == commit2.id) {
+            JOptionPane.showMessageDialog(this, "Please select two different commits",
+                "Same Commit Selected", JOptionPane.WARNING_MESSAGE)
+            return
+        }
+
+        setStatus("Loading commits for comparison...")
+        logDiagnostic("Comparing commits: ${commit1.id} vs ${commit2.id}")
+
+        // Load root elements for both commits
+        SwingWorker worker = new SwingWorker<Map, Void>() {
+            @Override
+            protected Map doInBackground() {
+                Map commit1Data = [:]
+                Map commit2Data = [:]
+
+                try {
+                    // Load roots for commit 1
+                    def roots1 = apiGetList("/projects/${currentProjectId}/commits/${commit1.id}/roots")
+                    roots1.each { root ->
+                        def element = apiGet("/projects/${currentProjectId}/commits/${commit1.id}/elements/${root['@id']}")
+                        commit1Data[root['@id']] = element
+                    }
+
+                    // Load roots for commit 2
+                    def roots2 = apiGetList("/projects/${currentProjectId}/commits/${commit2.id}/roots")
+                    roots2.each { root ->
+                        def element = apiGet("/projects/${currentProjectId}/commits/${commit2.id}/elements/${root['@id']}")
+                        commit2Data[root['@id']] = element
+                    }
+                } catch (Exception e) {
+                    logError("showCommitDiffViewer", e)
+                }
+
+                return [commit1: commit1Data, commit2: commit2Data]
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    Map data = get()
+                    displayCommitDiff(commit1, commit2, data['commit1'], data['commit2'])
+                } catch (Exception e) {
+                    setStatus("Error comparing commits")
+                    logError("showCommitDiffViewer.done", e)
+                    showErrorDialog(SysMLv2ExplorerFrame.this, "Commit Comparison Error",
+                        "Failed to compare commits.", e)
+                }
+            }
+        }
+        worker.execute()
+    }
+
+    void displayCommitDiff(CommitItem commit1, CommitItem commit2, Map commit1Data, Map commit2Data) {
+        // Analyze differences
+        Set allIds = new HashSet()
+        allIds.addAll(commit1Data.keySet())
+        allIds.addAll(commit2Data.keySet())
+
+        List<String> added = []
+        List<String> removed = []
+        List<String> modified = []
+        List<String> unchanged = []
+
+        allIds.each { id ->
+            boolean inCommit1 = commit1Data.containsKey(id)
+            boolean inCommit2 = commit2Data.containsKey(id)
+
+            if (!inCommit1 && inCommit2) {
+                // Added in commit2
+                def element = commit2Data[id]
+                String name = element['name'] ?: element['declaredName'] ?: id.take(8)
+                String type = element['@type'] ?: 'Unknown'
+                added << "${name} (${type})"
+            } else if (inCommit1 && !inCommit2) {
+                // Removed in commit2
+                def element = commit1Data[id]
+                String name = element['name'] ?: element['declaredName'] ?: id.take(8)
+                String type = element['@type'] ?: 'Unknown'
+                removed << "${name} (${type})"
+            } else {
+                // Exists in both - check if modified
+                def elem1 = commit1Data[id]
+                def elem2 = commit2Data[id]
+
+                String name = elem2['name'] ?: elem2['declaredName'] ?: id.take(8)
+                String type = elem2['@type'] ?: 'Unknown'
+
+                // Simple comparison - could be enhanced
+                if (elem1.toString() != elem2.toString()) {
+                    modified << "${name} (${type})"
+                } else {
+                    unchanged << "${name} (${type})"
+                }
+            }
+        }
+
+        // Build diff report
+        StringBuilder diff = new StringBuilder()
+        diff.append("═══ COMMIT DIFF VIEWER ═══\n\n")
+        diff.append("Base Commit:    ${commit1.timestamp}\n")
+        diff.append("                ${commit1.id}\n")
+        diff.append("\n")
+        diff.append("Compare Commit: ${commit2.timestamp}\n")
+        diff.append("                ${commit2.id}\n")
+        diff.append("\n")
+        diff.append("─── Summary ───\n")
+        diff.append("Added:     ${added.size()} elements\n")
+        diff.append("Removed:   ${removed.size()} elements\n")
+        diff.append("Modified:  ${modified.size()} elements\n")
+        diff.append("Unchanged: ${unchanged.size()} elements\n")
+        diff.append("Total:     ${allIds.size()} elements\n")
+        diff.append("\n")
+
+        if (added.size() > 0) {
+            diff.append("─── Added Elements ───\n")
+            added.sort().each { diff.append("+ ${it}\n") }
+            diff.append("\n")
+        }
+
+        if (removed.size() > 0) {
+            diff.append("─── Removed Elements ───\n")
+            removed.sort().each { diff.append("- ${it}\n") }
+            diff.append("\n")
+        }
+
+        if (modified.size() > 0) {
+            diff.append("─── Modified Elements ───\n")
+            int showCount = Math.min(50, modified.size())
+            modified.sort().take(showCount).each { diff.append("~ ${it}\n") }
+            if (modified.size() > showCount) {
+                diff.append("\n... and ${modified.size() - showCount} more modified elements\n")
+            }
+            diff.append("\n")
+        }
+
+        // Create display dialog
+        JTextArea textArea = new JTextArea(diff.toString())
+        textArea.editable = false
+        textArea.font = new Font("Monospaced", Font.PLAIN, 12)
+        textArea.caretPosition = 0
+
+        JScrollPane scrollPane = new JScrollPane(textArea)
+        scrollPane.preferredSize = new Dimension(700, 600)
+
+        JOptionPane.showMessageDialog(this, scrollPane,
+            "Commit Diff: ${commit1.timestamp} → ${commit2.timestamp}",
+            JOptionPane.INFORMATION_MESSAGE)
+
+        setStatus("Commit comparison complete")
+        logDiagnostic("Commit diff shown: ${added.size()} added, ${removed.size()} removed, ${modified.size()} modified")
     }
 
     void showAboutDialog() {
