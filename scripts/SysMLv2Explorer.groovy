@@ -820,10 +820,76 @@ class SysMLv2ExplorerFrame extends JFrame {
         sb.append("Qualified Name: ${element['qualifiedName'] ?: 'N/A'}\n")
         sb.append("Short Name: ${element['shortName'] ?: 'N/A'}\n")
         sb.append("Element ID: ${element['elementId'] ?: 'N/A'}\n")
+
+        // Documentation
+        if (element['documentation']) {
+            sb.append("\n--- Documentation ---\n")
+            sb.append("${element['documentation']}\n")
+        }
+
+        // SysML v2 Specific Properties
+        sb.append("\n--- SysML v2 Properties ---\n")
+        if (element['direction']) {
+            sb.append("Direction: ${element['direction']}\n")
+        }
+        if (element['multiplicity']) {
+            def mult = element['multiplicity']
+            def lower = mult['lowerBound'] ?: 0
+            def upper = mult['upperBound'] ?: '*'
+            sb.append("Multiplicity: [${lower}..${upper}]\n")
+        }
+        if (element['declaredType'] || element['type']) {
+            def typeRef = element['declaredType'] ?: element['type']
+            sb.append("Type: ${typeRef}\n")
+        }
+
         sb.append("\n--- Flags ---\n")
         sb.append("Is Abstract: ${element['isAbstract'] ?: 'false'}\n")
         sb.append("Is Library Element: ${element['isLibraryElement'] ?: 'false'}\n")
         sb.append("Is Implied Included: ${element['isImpliedIncluded'] ?: 'false'}\n")
+        if (element['isComposite'] != null) {
+            sb.append("Is Composite: ${element['isComposite']}\n")
+        }
+        if (element['isReadOnly'] != null) {
+            sb.append("Is Read Only: ${element['isReadOnly']}\n")
+        }
+        if (element['isDerived'] != null) {
+            sb.append("Is Derived: ${element['isDerived']}\n")
+        }
+        if (element['isOrdered'] != null) {
+            sb.append("Is Ordered: ${element['isOrdered']}\n")
+        }
+        if (element['isUnique'] != null) {
+            sb.append("Is Unique: ${element['isUnique']}\n")
+        }
+
+        // Specializations
+        if (element['specialization']) {
+            def specs = element['specialization'] instanceof List ?
+                element['specialization'] : [element['specialization']]
+            if (specs.size() > 0) {
+                sb.append("\n--- Specializations ---\n")
+                specs.each { spec ->
+                    if (spec['general']) {
+                        sb.append("Specializes: ${spec['general']}\n")
+                    }
+                }
+            }
+        }
+
+        // Redefinitions
+        if (element['redefinition']) {
+            def redefs = element['redefinition'] instanceof List ?
+                element['redefinition'] : [element['redefinition']]
+            if (redefs.size() > 0) {
+                sb.append("\n--- Redefinitions ---\n")
+                redefs.each { redef ->
+                    if (redef['redefinedFeature']) {
+                        sb.append("Redefines: ${redef['redefinedFeature']}\n")
+                    }
+                }
+            }
+        }
 
         // Count relationships
         List ownedMember = element['ownedMember'] ?: []
