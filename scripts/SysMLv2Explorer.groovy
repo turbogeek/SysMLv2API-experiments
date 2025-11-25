@@ -212,6 +212,12 @@ class SysMLv2ExplorerFrame extends JFrame {
         collapseAllItem.addActionListener { collapseAllNodes() }
         viewMenu.add(collapseAllItem)
 
+        viewMenu.addSeparator()
+
+        JMenuItem statsItem = new JMenuItem("Model Statistics...", KeyEvent.VK_S)
+        statsItem.addActionListener { showModelStatistics() }
+        viewMenu.add(statsItem)
+
         menuBar.add(viewMenu)
 
         JMenu helpMenu = new JMenu("Help")
@@ -1093,6 +1099,79 @@ class SysMLv2ExplorerFrame extends JFrame {
         SwingUtilities.invokeLater {
             statusLabel.text = message
         }
+    }
+
+    /**
+     * Show model statistics dashboard
+     */
+    void showModelStatistics() {
+        if (!currentProjectId) {
+            JOptionPane.showMessageDialog(this, "Please select a project first",
+                "No Project", JOptionPane.WARNING_MESSAGE)
+            return
+        }
+
+        // Analyze the current tree and cache
+        Map<String, Integer> typeCounts = [:]
+        int totalElements = 0
+        int loadedNodes = 0
+
+        // Count from cache
+        elementCache.each { id, element ->
+            totalElements++
+            String type = element['@type'] ?: 'Unknown'
+            typeCounts[type] = (typeCounts[type] ?: 0) + 1
+        }
+
+        // Count loaded tree nodes
+        loadedNodes = countTreeNodes(treeModel.root)
+
+        // Build statistics report
+        StringBuilder stats = new StringBuilder()
+        stats.append("═══ MODEL STATISTICS ═══\n\n")
+        stats.append("Project: ${currentProjectId?.take(8)}...\n")
+        stats.append("Commit:  ${currentCommitId?.take(8)}...\n")
+        stats.append("\n")
+        stats.append("─── Overview ───\n")
+        stats.append("Total Elements Cached: ${totalElements}\n")
+        stats.append("Tree Nodes Loaded:     ${loadedNodes}\n")
+        stats.append("Unique Element Types:  ${typeCounts.size()}\n")
+        stats.append("\n")
+        stats.append("─── Element Types ───\n")
+
+        // Sort by count descending
+        def sortedTypes = typeCounts.sort { a, b -> b.value <=> a.value }
+        sortedTypes.each { type, count ->
+            String paddedCount = count.toString().padLeft(5)
+            stats.append("${paddedCount}  ${type}\n")
+        }
+
+        stats.append("\n")
+        stats.append("─── Cache Information ───\n")
+        stats.append("Cache Size:  ${elementCache.size()} elements\n")
+        stats.append("Memory Est:  ~${(elementCache.size() * 2)} KB\n")
+
+        // Create dialog
+        JTextArea textArea = new JTextArea(stats.toString())
+        textArea.editable = false
+        textArea.font = new Font("Monospaced", Font.PLAIN, 12)
+        textArea.caretPosition = 0
+
+        JScrollPane scrollPane = new JScrollPane(textArea)
+        scrollPane.preferredSize = new Dimension(500, 600)
+
+        JOptionPane.showMessageDialog(this, scrollPane,
+            "Model Statistics",
+            JOptionPane.INFORMATION_MESSAGE)
+    }
+
+    int countTreeNodes(TreeNode node) {
+        if (!node) return 0
+        int count = 1
+        for (int i = 0; i < node.childCount; i++) {
+            count += countTreeNodes(node.getChildAt(i))
+        }
+        return count
     }
 
     void showAboutDialog() {
