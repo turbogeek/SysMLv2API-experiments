@@ -218,6 +218,10 @@ class SysMLv2ExplorerFrame extends JFrame {
         statsItem.addActionListener { showModelStatistics() }
         viewMenu.add(statsItem)
 
+        JMenuItem traceItem = new JMenuItem("Traceability Matrix...", KeyEvent.VK_T)
+        traceItem.addActionListener { showTraceabilityMatrix() }
+        viewMenu.add(traceItem)
+
         menuBar.add(viewMenu)
 
         JMenu helpMenu = new JMenu("Help")
@@ -1172,6 +1176,134 @@ class SysMLv2ExplorerFrame extends JFrame {
             count += countTreeNodes(node.getChildAt(i))
         }
         return count
+    }
+
+    /**
+     * Show traceability matrix - relationships between model elements
+     */
+    void showTraceabilityMatrix() {
+        if (!currentProjectId) {
+            JOptionPane.showMessageDialog(this, "Please select a project first",
+                "No Project", JOptionPane.WARNING_MESSAGE)
+            return
+        }
+
+        if (elementCache.isEmpty()) {
+            JOptionPane.showMessageDialog(this,
+                "Please load a project first.\nUse 'Load All' button to load all elements for complete traceability.",
+                "No Elements Loaded", JOptionPane.WARNING_MESSAGE)
+            return
+        }
+
+        setStatus("Analyzing traceability relationships...")
+        logDiagnostic("Building traceability matrix")
+
+        // Analyze relationships in the cache
+        Map<String, List<String>> relationships = [:]
+        Map<String, String> elementNames = [:]
+        Map<String, String> elementTypes = [:]
+
+        elementCache.each { id, element ->
+            String name = element['name'] ?: element['declaredName'] ?: id.take(8)
+            String type = element['@type'] ?: 'Unknown'
+            elementNames[id] = name
+            elementTypes[id] = type
+
+            // Look for various relationship types
+            ['ownedMember', 'ownedFeature', 'client', 'supplier', 'source', 'target'].each { relType ->
+                def related = element[relType]
+                if (related) {
+                    if (related instanceof List) {
+                        related.each { ref ->
+                            String refId = ref['@id']
+                            if (refId) {
+                                String key = "${id}:${relType}"
+                                if (!relationships[key]) relationships[key] = []
+                                relationships[key] << refId
+                            }
+                        }
+                    } else if (related instanceof Map) {
+                        String refId = related['@id']
+                        if (refId) {
+                            String key = "${id}:${relType}"
+                            if (!relationships[key]) relationships[key] = []
+                            relationships[key] << refId
+                        }
+                    }
+                }
+            }
+        }
+
+        // Build matrix display
+        StringBuilder matrix = new StringBuilder()
+        matrix.append("═══ TRACEABILITY MATRIX ═══\n\n")
+        matrix.append("Project: ${currentProjectId?.take(8)}...\n")
+        matrix.append("Commit:  ${currentCommitId?.take(8)}...\n")
+        matrix.append("Elements Analyzed: ${elementCache.size()}\n")
+        matrix.append("Relationships Found: ${relationships.size()}\n")
+        matrix.append("\n")
+
+        if (relationships.isEmpty()) {
+            matrix.append("No relationships found in loaded elements.\n")
+            matrix.append("Try using 'Load All' to load complete model structure.\n")
+        } else {
+            matrix.append("─── Relationship Summary ───\n")
+
+            // Count relationship types
+            Map<String, Integer> relTypeCounts = [:]
+            relationships.each { key, targets ->
+                String relType = key.split(':')[1]
+                relTypeCounts[relType] = (relTypeCounts[relType] ?: 0) + targets.size()
+            }
+
+            relTypeCounts.sort { a, b -> b.value <=> a.value }.each { relType, count ->
+                matrix.append(String.format("  %-15s: %4d\n", relType, count))
+            }
+
+            matrix.append("\n─── Detailed Relationships ───\n")
+            matrix.append("(Showing first 50 relationships)\n\n")
+
+            int shown = 0
+            relationships.take(50).each { key, targets ->
+                String[] parts = key.split(':')
+                String sourceId = parts[0]
+                String relType = parts[1]
+
+                String sourceName = elementNames[sourceId] ?: sourceId.take(8)
+                String sourceType = elementTypes[sourceId] ?: 'Unknown'
+
+                targets.each { targetId ->
+                    String targetName = elementNames[targetId] ?: targetId.take(8)
+                    String targetType = elementTypes[targetId] ?: 'Unknown'
+
+                    matrix.append(String.format("%-25s ─[%-12s]→ %-25s\n",
+                        "${sourceName} (${sourceType})".take(25),
+                        relType,
+                        "${targetName} (${targetType})".take(25)))
+                    shown++
+                }
+            }
+
+            if (relationships.size() > 50) {
+                matrix.append("\n... and ${relationships.size() - 50} more relationships\n")
+            }
+        }
+
+        // Create dialog with table
+        JTextArea textArea = new JTextArea(matrix.toString())
+        textArea.editable = false
+        textArea.font = new Font("Monospaced", Font.PLAIN, 11)
+        textArea.caretPosition = 0
+
+        JScrollPane scrollPane = new JScrollPane(textArea)
+        scrollPane.preferredSize = new Dimension(700, 600)
+
+        JOptionPane.showMessageDialog(this, scrollPane,
+            "Traceability Matrix",
+            JOptionPane.INFORMATION_MESSAGE)
+
+        setStatus("Traceability analysis complete")
+        logDiagnostic("Traceability matrix shown: ${relationships.size()} relationships")
     }
 
     void showAboutDialog() {
