@@ -38,6 +38,7 @@ import javax.swing.*
 import javax.swing.tree.*
 import javax.swing.event.*
 import javax.swing.border.*
+import javax.swing.table.*
 import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Component
@@ -1448,7 +1449,7 @@ class SysMLv2ExplorerFrame extends JFrame {
     }
 
     /**
-     * Show traceability matrix - relationships between model elements
+     * Show traceability matrix - Cameo-style grid matrix showing relationships between elements
      */
     void showTraceabilityMatrix() {
         if (!currentProjectId) {
@@ -1465,114 +1466,170 @@ class SysMLv2ExplorerFrame extends JFrame {
         }
 
         setStatus("Analyzing traceability relationships...")
-        logDiagnostic("Building traceability matrix")
+        logDiagnostic("Building Cameo-style traceability matrix")
 
-        // Analyze relationships in the cache
-        Map<String, List<String>> relationships = [:]
+        // Collect elements by type
+        Map<String, List<Map>> elementsByType = [:]
         Map<String, String> elementNames = [:]
-        Map<String, String> elementTypes = [:]
 
         elementCache.each { id, element ->
+            String type = element['@type']?.tokenize('.')[-1] ?: 'Unknown'
             String name = element['name'] ?: element['declaredName'] ?: id.take(8)
-            String type = element['@type'] ?: 'Unknown'
             elementNames[id] = name
-            elementTypes[id] = type
 
-            // Look for various relationship types
-            ['ownedMember', 'ownedFeature', 'client', 'supplier', 'source', 'target'].each { relType ->
+            if (!elementsByType[type]) elementsByType[type] = []
+            elementsByType[type] << [id: id, name: name, element: element]
+        }
+
+        // Build relationship map: sourceId -> targetId -> relationshipType
+        Map<String, Map<String, String>> relationshipMap = [:]
+
+        elementCache.each { id, element ->
+            relationshipMap[id] = [:]
+
+            // Check all relationship properties
+            ['ownedMember', 'ownedFeature', 'client', 'supplier', 'source', 'target',
+             'satisfiedRequirement', 'satisfyingFeature'].each { relType ->
                 def related = element[relType]
                 if (related) {
-                    if (related instanceof List) {
-                        related.each { ref ->
-                            String refId = ref['@id']
-                            if (refId) {
-                                String key = "${id}:${relType}"
-                                if (!relationships[key]) relationships[key] = []
-                                relationships[key] << refId
+                    List refs = (related instanceof List) ? related : [related]
+                    refs.each { ref ->
+                        String refId = ref['@id']
+                        if (refId && elementCache.containsKey(refId)) {
+                            // Store the relationship type for this connection
+                            String existing = relationshipMap[id][refId]
+                            if (existing) {
+                                relationshipMap[id][refId] = "${existing},${relType}"
+                            } else {
+                                relationshipMap[id][refId] = relType
                             }
-                        }
-                    } else if (related instanceof Map) {
-                        String refId = related['@id']
-                        if (refId) {
-                            String key = "${id}:${relType}"
-                            if (!relationships[key]) relationships[key] = []
-                            relationships[key] << refId
                         }
                     }
                 }
             }
         }
 
-        // Build matrix display
-        StringBuilder matrix = new StringBuilder()
-        matrix.append("═══ TRACEABILITY MATRIX ═══\n\n")
-        matrix.append("Project: ${currentProjectId?.take(8)}...\n")
-        matrix.append("Commit:  ${currentCommitId?.take(8)}...\n")
-        matrix.append("Elements Analyzed: ${elementCache.size()}\n")
-        matrix.append("Relationships Found: ${relationships.size()}\n")
-        matrix.append("\n")
+        // Create matrix: get distinct source and target types
+        List<String> sourceTypes = elementsByType.keySet().toList().sort()
+        List<String> targetTypes = elementsByType.keySet().toList().sort()
 
-        if (relationships.isEmpty()) {
-            matrix.append("No relationships found in loaded elements.\n")
-            matrix.append("Try using 'Load All' to load complete model structure.\n")
-        } else {
-            matrix.append("─── Relationship Summary ───\n")
+        // Build JTable model
+        List<String> rowElements = []
+        List<String> colElements = []
 
-            // Count relationship types
-            Map<String, Integer> relTypeCounts = [:]
-            relationships.each { key, targets ->
-                String relType = key.split(':')[1]
-                relTypeCounts[relType] = (relTypeCounts[relType] ?: 0) + targets.size()
-            }
-
-            relTypeCounts.sort { a, b -> b.value <=> a.value }.each { relType, count ->
-                matrix.append(String.format("  %-15s: %4d\n", relType, count))
-            }
-
-            matrix.append("\n─── Detailed Relationships ───\n")
-            matrix.append("(Showing first 50 relationships)\n\n")
-
-            int shown = 0
-            relationships.take(50).each { key, targets ->
-                String[] parts = key.split(':')
-                String sourceId = parts[0]
-                String relType = parts[1]
-
-                String sourceName = elementNames[sourceId] ?: sourceId.take(8)
-                String sourceType = elementTypes[sourceId] ?: 'Unknown'
-
-                targets.each { targetId ->
-                    String targetName = elementNames[targetId] ?: targetId.take(8)
-                    String targetType = elementTypes[targetId] ?: 'Unknown'
-
-                    matrix.append(String.format("%-25s ─[%-12s]→ %-25s\n",
-                        "${sourceName} (${sourceType})".take(25),
-                        relType,
-                        "${targetName} (${targetType})".take(25)))
-                    shown++
-                }
-            }
-
-            if (relationships.size() > 50) {
-                matrix.append("\n... and ${relationships.size() - 50} more relationships\n")
+        // For simplicity, use all elements as both rows and columns (can be filtered later)
+        sourceTypes.take(10).each { type ->
+            elementsByType[type].take(10).each { elem ->
+                rowElements << elem.id
             }
         }
 
-        // Create dialog with table
-        JTextArea textArea = new JTextArea(matrix.toString())
-        textArea.editable = false
-        textArea.font = new Font("Monospaced", Font.PLAIN, 11)
-        textArea.caretPosition = 0
+        targetTypes.take(10).each { type ->
+            elementsByType[type].take(10).each { elem ->
+                colElements << elem.id
+            }
+        }
 
-        JScrollPane scrollPane = new JScrollPane(textArea)
-        scrollPane.preferredSize = new Dimension(700, 600)
+        // Build table data
+        String[] columnNames = ([''] + colElements.collect { elementNames[it] ?: it.take(8) }) as String[]
+        Object[][] data = new Object[rowElements.size()][colElements.size() + 1]
 
-        JOptionPane.showMessageDialog(this, scrollPane,
-            "Traceability Matrix",
-            JOptionPane.INFORMATION_MESSAGE)
+        rowElements.eachWithIndex { rowId, rowIdx ->
+            data[rowIdx][0] = elementNames[rowId] ?: rowId.take(8)  // Row header
+
+            colElements.eachWithIndex { colId, colIdx ->
+                String relType = relationshipMap[rowId]?[colId]
+                data[rowIdx][colIdx + 1] = relType ? "✓" : ""
+            }
+        }
+
+        // Create JTable with custom renderer
+        JTable table = new JTable(data, columnNames)
+        table.autoResizeMode = JTable.AUTO_RESIZE_OFF
+        table.setDefaultRenderer(Object.class, new TraceabilityMatrixCellRenderer(relationshipMap, rowElements, colElements))
+
+        // Set column widths
+        table.columnModel.getColumn(0).preferredWidth = 150  // Row header column
+        for (int i = 1; i < table.columnCount; i++) {
+            table.columnModel.getColumn(i).preferredWidth = 80
+        }
+
+        // Set row height
+        table.rowHeight = 25
+
+        JScrollPane scrollPane = new JScrollPane(table)
+        scrollPane.preferredSize = new Dimension(900, 600)
+
+        // Create info panel
+        JPanel infoPanel = new JPanel(new BorderLayout())
+        JLabel infoLabel = new JLabel(String.format(
+            "  Elements: %d | Relationships: %d | Rows: %d | Columns: %d",
+            elementCache.size(),
+            relationshipMap.values().sum { it.size() } ?: 0,
+            rowElements.size(),
+            colElements.size()))
+        infoLabel.border = BorderFactory.createEmptyBorder(5, 5, 5, 5)
+        infoPanel.add(infoLabel, BorderLayout.NORTH)
+        infoPanel.add(scrollPane, BorderLayout.CENTER)
+
+        JOptionPane.showMessageDialog(this, infoPanel,
+            "Traceability Matrix (Cameo-style)",
+            JOptionPane.PLAIN_MESSAGE)
 
         setStatus("Traceability analysis complete")
-        logDiagnostic("Traceability matrix shown: ${relationships.size()} relationships")
+        logDiagnostic("Cameo-style traceability matrix shown: ${rowElements.size()}x${colElements.size()}")
+    }
+
+    /**
+     * Custom cell renderer for traceability matrix
+     */
+    static class TraceabilityMatrixCellRenderer extends DefaultTableCellRenderer {
+        Map<String, Map<String, String>> relationshipMap
+        List<String> rowElements
+        List<String> colElements
+
+        TraceabilityMatrixCellRenderer(Map<String, Map<String, String>> relationshipMap,
+                                       List<String> rowElements, List<String> colElements) {
+            this.relationshipMap = relationshipMap
+            this.rowElements = rowElements
+            this.colElements = colElements
+        }
+
+        @Override
+        Component getTableCellRendererComponent(JTable table, Object value,
+                                                 boolean isSelected, boolean hasFocus,
+                                                 int row, int column) {
+            Component c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column)
+
+            if (column == 0) {
+                // Row header - bold
+                setFont(getFont().deriveFont(Font.BOLD))
+                setBackground(new Color(230, 230, 230))
+                setHorizontalAlignment(SwingConstants.LEFT)
+            } else {
+                // Matrix cell
+                setFont(getFont().deriveFont(Font.PLAIN))
+                setHorizontalAlignment(SwingConstants.CENTER)
+
+                String rowId = rowElements[row]
+                String colId = colElements[column - 1]
+                String relType = relationshipMap[rowId]?[colId]
+
+                if (relType) {
+                    setBackground(new Color(200, 255, 200))  // Light green for relationships
+                    setToolTipText("Relationship: ${relType}")
+                } else {
+                    setBackground(Color.WHITE)
+                    setToolTipText(null)
+                }
+
+                if (isSelected) {
+                    setBackground(table.selectionBackground)
+                }
+            }
+
+            return c
+        }
     }
 
     void showCommitDiffViewer() {
