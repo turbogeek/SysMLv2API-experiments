@@ -475,9 +475,12 @@ class SysMLv2ExplorerFrame extends JFrame {
         setStatus("Loading projects...")
         logDiagnostic("Starting loadProjects()")
 
+        ProgressDialog progress = new ProgressDialog(this as JFrame, "Loading Projects")
+
         SwingWorker worker = new SwingWorker<ArrayList, Void>() {
             @Override
             protected ArrayList doInBackground() {
+                progress.updateStatus("Fetching project list from server...")
                 return apiGetList("/projects") as ArrayList
             }
 
@@ -488,25 +491,49 @@ class SysMLv2ExplorerFrame extends JFrame {
                     logDiagnostic("Received ${projects?.size() ?: 0} projects")
                     projectCombo.removeAllItems()
 
+                    if (progress.cancelled) {
+                        logDiagnostic("Project loading cancelled by user")
+                        setStatus("Project loading cancelled")
+                        return
+                    }
+
                     // Check accessibility for each project in parallel for faster startup
+                    progress.updateStatus("Checking accessibility for ${projects.size()} projects...")
+                    progress.setProgress(0, projects.size())
+
                     long startTime = System.currentTimeMillis()
                     logDiagnostic("Starting parallel accessibility checks for ${projects.size()} projects...")
 
                     def projectItems = Collections.synchronizedList([])
+                    def counter = new java.util.concurrent.atomic.AtomicInteger(0)
 
                     GParsPool.withPool(10) {  // 10 concurrent threads
                         projects.eachParallel { p ->
+                            if (progress.cancelled) return
+
                             String projectId = p['@id'] as String
                             String projectName = p['name'] as String
                             boolean accessible = checkProjectAccessibility(projectId)
                             projectItems << new ProjectItem(projectId, projectName, accessible)
+
+                            int count = counter.incrementAndGet()
+                            if (count % 5 == 0) {
+                                progress.setProgress(count, projects.size())
+                            }
                         }
                     }
 
                     long elapsed = System.currentTimeMillis() - startTime
                     logDiagnostic("Parallel accessibility checks completed in ${elapsed}ms (${projects.size()} projects)")
 
+                    if (progress.cancelled) {
+                        logDiagnostic("Project loading cancelled after accessibility checks")
+                        setStatus("Project loading cancelled")
+                        return
+                    }
+
                     // Add all items to combo box
+                    progress.updateStatus("Populating project list...")
                     projectItems.each { projectCombo.addItem(it) }
 
                     setStatus("Loaded ${projects.size()} projects (${elapsed}ms)")
@@ -516,9 +543,13 @@ class SysMLv2ExplorerFrame extends JFrame {
                     setStatus("Error loading projects")
                     showErrorDialog(SysMLv2ExplorerFrame.this, "Load Projects Error",
                         "Failed to load projects from server.", e)
+                } finally {
+                    progress.dispose()
                 }
             }
         }
+
+        progress.visible = true
         worker.execute()
     }
 
@@ -563,20 +594,31 @@ class SysMLv2ExplorerFrame extends JFrame {
         commitCombo.removeAllItems()
         commitCombo.enabled = false
 
+        ProgressDialog progress = new ProgressDialog(this as JFrame, "Loading Commits")
+
         SwingWorker worker = new SwingWorker<ArrayList, Void>() {
             @Override
             protected ArrayList doInBackground() {
+                progress.updateStatus("Fetching commit history...")
                 return apiGetList("/projects/${projectId}/commits") as ArrayList
             }
 
             @Override
             protected void done() {
                 try {
+                    if (progress.cancelled) {
+                        logDiagnostic("Commit loading cancelled by user")
+                        setStatus("Commit loading cancelled")
+                        return
+                    }
+
                     ArrayList commits = get()
                     logDiagnostic("Received ${commits?.size() ?: 0} commits for project ${projectId}")
                     currentCommits = commits
 
                     if (commits && !commits.isEmpty()) {
+                        progress.updateStatus("Populating commit list...")
+
                         // Latest commit is at the end of the list
                         commits.eachWithIndex { commit, index ->
                             String commitId = commit['@id'] as String
@@ -598,9 +640,13 @@ class SysMLv2ExplorerFrame extends JFrame {
                     logError("loadCommitsForProject", e)
                     showErrorDialog(SysMLv2ExplorerFrame.this, "Load Commits Error",
                         "Failed to load commits for project.", e)
+                } finally {
+                    progress.dispose()
                 }
             }
         }
+
+        progress.visible = true
         worker.execute()
     }
 
@@ -622,6 +668,8 @@ class SysMLv2ExplorerFrame extends JFrame {
         elementCache.clear()
         setStatus("Loading project elements...")
 
+        ProgressDialog progress = new ProgressDialog(this as JFrame, "Loading Elements")
+
         SwingWorker worker = new SwingWorker<Void, Void>() {
             List roots
             String useCommitId = commitId
@@ -635,6 +683,7 @@ class SysMLv2ExplorerFrame extends JFrame {
 
                 if (useCommitId) {
                     currentCommitId = useCommitId
+                    progress.updateStatus("Fetching root elements...")
                     roots = apiGetList("/projects/${projectId}/commits/${currentCommitId}/roots")
                 }
                 return null
@@ -643,9 +692,16 @@ class SysMLv2ExplorerFrame extends JFrame {
             @Override
             protected void done() {
                 try {
+                    if (progress.cancelled) {
+                        logDiagnostic("Element loading cancelled by user")
+                        setStatus("Element loading cancelled")
+                        return
+                    }
+
                     get()
                     if (roots) {
-                        buildTree(roots)
+                        progress.updateStatus("Building tree structure...")
+                        buildTree(roots, progress)
                         String commitLabel = useCommitId?.take(8) ?: 'Unknown'
                         setStatus("Loaded project - Commit: ${commitLabel}...")
                     } else {
@@ -654,16 +710,34 @@ class SysMLv2ExplorerFrame extends JFrame {
                 } catch (Exception e) {
                     setStatus("Error: ${e.message}")
                     logError("loadProjectElements", e)
+                } finally {
+                    progress.dispose()
                 }
             }
         }
+
+        progress.visible = true
         worker.execute()
     }
 
-    void buildTree(List roots) {
+    void buildTree(List roots, ProgressDialog progress = null) {
         DefaultMutableTreeNode rootNode = new DefaultMutableTreeNode("Project")
 
+        // Calculate total members across all roots for progress tracking
+        int totalMembers = 0
         roots.each { root ->
+            List ownedMember = root['ownedMember'] ?: []
+            totalMembers += ownedMember.size()
+        }
+
+        if (progress && totalMembers > 0) {
+            progress.setProgress(0, totalMembers)
+        }
+
+        int memberCount = 0
+        roots.each { root ->
+            if (progress?.cancelled) return
+
             // Cache root element
             String rootId = root['@id']
             elementCache[rootId] = root
@@ -671,17 +745,29 @@ class SysMLv2ExplorerFrame extends JFrame {
             // Process owned members
             List ownedMember = root['ownedMember'] ?: []
             ownedMember.each { memberRef ->
+                if (progress?.cancelled) return
+
                 String memberId = memberRef['@id']
                 if (memberId) {
                     try {
                         Map member = getElement(memberId)
                         ElementTreeNode node = createTreeNode(member)
                         rootNode.add(node)
+
+                        memberCount++
+                        if (progress && memberCount % 5 == 0) {
+                            progress.setProgress(memberCount, totalMembers)
+                        }
                     } catch (Exception e) {
                         // Skip inaccessible elements
                     }
                 }
             }
+        }
+
+        if (progress?.cancelled) {
+            logDiagnostic("Tree building cancelled, partial tree loaded")
+            return
         }
 
         treeModel.setRoot(rootNode)
@@ -1957,6 +2043,65 @@ Features:
     }
 
     /**
+     * Progress dialog for long-running operations with cancel support
+     */
+    static class ProgressDialog extends JDialog {
+        JProgressBar progressBar
+        JLabel statusLabel
+        JButton cancelButton
+        volatile boolean cancelled = false
+
+        ProgressDialog(JFrame parent, String title) {
+            super(parent, title, false)  // Non-modal so user can see main window
+            setupUI()
+        }
+
+        private void setupUI() {
+            setLayout(new BorderLayout(10, 10))
+
+            statusLabel = new JLabel("Please wait...")
+            statusLabel.setBorder(BorderFactory.createEmptyBorder(10, 10, 5, 10))
+            add(statusLabel, BorderLayout.NORTH)
+
+            progressBar = new JProgressBar()
+            progressBar.setIndeterminate(true)
+            progressBar.setBorder(BorderFactory.createEmptyBorder(5, 10, 5, 10))
+            add(progressBar, BorderLayout.CENTER)
+
+            cancelButton = new JButton("Cancel")
+            cancelButton.addActionListener { e ->
+                cancelled = true
+                cancelButton.enabled = false
+                statusLabel.text = "Cancelling..."
+            }
+
+            JPanel buttonPanel = new JPanel()
+            buttonPanel.add(cancelButton)
+            add(buttonPanel, BorderLayout.SOUTH)
+
+            pack()
+            setLocationRelativeTo(parent)
+            setDefaultCloseOperation(DO_NOTHING_ON_CLOSE)
+        }
+
+        void updateStatus(String message) {
+            SwingUtilities.invokeLater {
+                statusLabel.text = message
+            }
+        }
+
+        void setProgress(int current, int total) {
+            SwingUtilities.invokeLater {
+                if (progressBar.indeterminate) {
+                    progressBar.indeterminate = false
+                    progressBar.maximum = total
+                }
+                progressBar.value = current
+            }
+        }
+    }
+
+    /**
      * Custom renderer for project combo box that shows red indicator for inaccessible projects
      */
     static class ProjectComboRenderer extends DefaultListCellRenderer {
@@ -2028,10 +2173,13 @@ Features:
                     foreground = color
                 }
 
-                // Set icon based on type
-                if (type?.endsWith('Definition')) {
-                    setIcon(UIManager.getIcon("Tree.closedIcon"))
-                } else if (type?.endsWith('Usage')) {
+                // Set icon based on type - only Package types should show folder icons
+                String typeSimple = type?.tokenize('.')[-1] ?: ''
+                if (typeSimple.endsWith('Package')) {
+                    // Show folder icon for Package types (open/closed based on expansion)
+                    setIcon(expanded ? UIManager.getIcon("Tree.openIcon") : UIManager.getIcon("Tree.closedIcon"))
+                } else {
+                    // All other types get leaf icon
                     setIcon(UIManager.getIcon("Tree.leafIcon"))
                 }
             }
