@@ -683,8 +683,18 @@ class SysMLv2ExplorerFrame extends JFrame {
 
                 if (useCommitId) {
                     currentCommitId = useCommitId
-                    progress.updateStatus("Fetching root elements...")
-                    roots = apiGetList("/projects/${projectId}/commits/${currentCommitId}/roots")
+
+                    // Load project dependencies first
+                    if (!progress.cancelled) {
+                        progress.updateStatus("Loading project dependencies...")
+                        loadProjectDependencies(projectId, progress)
+                    }
+
+                    // Then load root elements
+                    if (!progress.cancelled) {
+                        progress.updateStatus("Fetching root elements...")
+                        roots = apiGetList("/projects/${projectId}/commits/${currentCommitId}/roots")
+                    }
                 }
                 return null
             }
@@ -772,6 +782,77 @@ class SysMLv2ExplorerFrame extends JFrame {
 
         treeModel.setRoot(rootNode)
         elementTree.expandRow(0)
+    }
+
+    /**
+     * Load project dependencies and their root elements into the cache
+     */
+    void loadProjectDependencies(String projectId, ProgressDialog progress = null) {
+        try {
+            // Fetch project details to get projectUsages
+            Map project = apiGet("/projects/${projectId}")
+            if (!project) {
+                logDiagnostic("Could not fetch project details for dependencies")
+                return
+            }
+
+            def projectUsages = project.projectUsages
+            if (!projectUsages) {
+                logDiagnostic("No dependencies found for project ${projectId}")
+                return
+            }
+
+            // Handle both single usage and list of usages
+            List usagesList = projectUsages instanceof List ? projectUsages : [projectUsages]
+
+            if (usagesList.isEmpty()) {
+                logDiagnostic("No dependencies to load")
+                return
+            }
+
+            logDiagnostic("Found ${usagesList.size()} dependencies to load")
+
+            for (int idx = 0; idx < usagesList.size(); idx++) {
+                if (progress?.cancelled) break
+
+                def usage = usagesList[idx]
+                def usedProject = usage.usedProject
+                def usedCommit = usage.usedCommit
+
+                String depProjectId = usedProject ? usedProject['@id'] : null
+                String depCommitId = usedCommit ? usedCommit['@id'] : null
+                String depProjectName = usedProject?.name ?: (depProjectId ? depProjectId.take(12) : 'Unknown')
+
+                if (depProjectId && depCommitId) {
+                    try {
+                        logDiagnostic("Loading dependency ${idx + 1}/${usagesList.size()}: ${depProjectName}")
+
+                        // Load root elements from dependency
+                        List depRoots = apiGetList("/projects/${depProjectId}/commits/${depCommitId}/roots")
+
+                        if (depRoots) {
+                            logDiagnostic("  Found ${depRoots.size()} root elements in dependency")
+
+                            // Cache the root elements from the dependency
+                            depRoots.each { root ->
+                                String rootId = root['@id']
+                                if (rootId && !elementCache.containsKey(rootId)) {
+                                    elementCache[rootId] = root
+                                }
+                            }
+                        }
+                    } catch (Exception e) {
+                        logError("Failed to load dependency ${depProjectName}", e)
+                    }
+                } else {
+                    logDiagnostic("  Skipping dependency with missing project or commit ID")
+                }
+            }
+
+            logDiagnostic("Dependency loading complete. Cache now contains ${elementCache.size()} elements")
+        } catch (Exception e) {
+            logError("loadProjectDependencies", e)
+        }
     }
 
     ElementTreeNode createTreeNode(Map element) {
@@ -1523,7 +1604,7 @@ class SysMLv2ExplorerFrame extends JFrame {
         panel.add(new JLabel("Base Commit:"), gbc)
 
         JComboBox<CommitItem> commit1Combo = new JComboBox<>()
-        currentCommits.each { commit1Combo.addItem(new CommitItem(commit['@id'], commit['timestamp'] ?: 'No timestamp', false)) }
+        currentCommits.each { commit1Combo.addItem(new CommitItem(it['@id'], it['timestamp'] ?: 'No timestamp', false)) }
         commit1Combo.selectedIndex = Math.max(0, currentCommits.size() - 2) // Second most recent
         gbc.gridx = 1
         gbc.weightx = 1.0
@@ -1536,7 +1617,7 @@ class SysMLv2ExplorerFrame extends JFrame {
         panel.add(new JLabel("Compare Commit:"), gbc)
 
         JComboBox<CommitItem> commit2Combo = new JComboBox<>()
-        currentCommits.each { commit2Combo.addItem(new CommitItem(commit['@id'], commit['timestamp'] ?: 'No timestamp', false)) }
+        currentCommits.each { commit2Combo.addItem(new CommitItem(it['@id'], it['timestamp'] ?: 'No timestamp', false)) }
         commit2Combo.selectedIndex = 0 // Most recent
         gbc.gridx = 1
         gbc.weightx = 1.0
