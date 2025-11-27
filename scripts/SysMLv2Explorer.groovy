@@ -234,6 +234,12 @@ class SysMLv2ExplorerFrame extends JFrame {
         diffItem.addActionListener { showCommitDiffViewer() }
         viewMenu.add(diffItem)
 
+        viewMenu.addSeparator()
+
+        JMenuItem perfTestItem = new JMenuItem("Test Parallel Loading Performance...", KeyEvent.VK_P)
+        perfTestItem.addActionListener { compareLoadPerformance() }
+        viewMenu.add(perfTestItem)
+
         menuBar.add(viewMenu)
 
         JMenu helpMenu = new JMenu("Help")
@@ -888,9 +894,19 @@ class SysMLv2ExplorerFrame extends JFrame {
 
         // Check if children need to be loaded
         if (node.childCount == 1 && node.getChildAt(0).toString() == "Loading...") {
+            String elementId = node.element['@id']
+            String elementName = node.element['name'] ?: elementId.take(8)
+
+            setStatus("Loading children for ${elementName}...")
+            long startTime = System.currentTimeMillis()
+
             node.removeAllChildren()
             loadNodeChildren(node)
             treeModel.nodeStructureChanged(node)
+
+            long elapsed = System.currentTimeMillis() - startTime
+            setStatus("Loaded ${node.childCount} children in ${elapsed}ms")
+            logDiagnostic("Expanded node: ${elementName}, ${node.childCount} children, ${elapsed}ms")
         }
     }
 
@@ -899,37 +915,54 @@ class SysMLv2ExplorerFrame extends JFrame {
 
         Set<String> addedIds = []
 
-        // Add owned members
+        // Collect all IDs to load
         List ownedMember = element['ownedMember'] ?: []
+        List ownedFeature = element['ownedFeature'] ?: []
+
+        List<String> idsToLoad = []
         ownedMember.each { memberRef ->
             String memberId = memberRef['@id']
             if (memberId && !addedIds.contains(memberId)) {
+                idsToLoad << memberId
+            }
+        }
+        ownedFeature.each { featureRef ->
+            String featureId = featureRef['@id']
+            if (featureId && !addedIds.contains(featureId)) {
+                idsToLoad << featureId
+            }
+        }
+
+        if (idsToLoad.isEmpty()) return
+
+        // Load elements in parallel
+        logDiagnostic("Loading ${idsToLoad.size()} child elements in parallel...")
+        long startTime = System.currentTimeMillis()
+
+        def loadedElements = Collections.synchronizedList([])
+
+        GParsPool.withPool(8) {  // 8 concurrent threads
+            idsToLoad.eachParallel { elementId ->
                 try {
-                    Map member = getElement(memberId)
-                    if (isDisplayableType(member['@type'])) {
-                        parentNode.add(createTreeNode(member))
-                        addedIds.add(memberId)
+                    Map childElement = getElement(elementId)
+                    if (isDisplayableType(childElement['@type'])) {
+                        loadedElements << [id: elementId, element: childElement]
                     }
                 } catch (Exception e) {
-                    // Skip
+                    logDiagnostic("Failed to load element ${elementId}: ${e.message}")
                 }
             }
         }
 
-        // Add owned features not in ownedMember
-        List ownedFeature = element['ownedFeature'] ?: []
-        ownedFeature.each { featureRef ->
-            String featureId = featureRef['@id']
-            if (featureId && !addedIds.contains(featureId)) {
-                try {
-                    Map feature = getElement(featureId)
-                    if (isDisplayableType(feature['@type'])) {
-                        parentNode.add(createTreeNode(feature))
-                        addedIds.add(featureId)
-                    }
-                } catch (Exception e) {
-                    // Skip
-                }
+        long elapsed = System.currentTimeMillis() - startTime
+        logDiagnostic("Parallel load completed in ${elapsed}ms (${loadedElements.size()} elements)")
+
+        // Add loaded elements to tree in original order
+        idsToLoad.each { elementId ->
+            def loaded = loadedElements.find { it.id == elementId }
+            if (loaded && !addedIds.contains(elementId)) {
+                parentNode.add(createTreeNode(loaded.element))
+                addedIds.add(elementId)
             }
         }
     }
@@ -1373,6 +1406,115 @@ class SysMLv2ExplorerFrame extends JFrame {
         SwingUtilities.invokeLater {
             statusLabel.text = message
         }
+    }
+
+    /**
+     * Compare sequential vs parallel element loading performance
+     */
+    void compareLoadPerformance() {
+        if (!currentProjectId || !currentCommitId) {
+            JOptionPane.showMessageDialog(this, "Please select a project first",
+                "No Project", JOptionPane.WARNING_MESSAGE)
+            return
+        }
+
+        int response = JOptionPane.showConfirmDialog(this,
+            "This will compare sequential vs parallel loading performance.\n" +
+            "Test will load 50 elements. Continue?",
+            "Performance Test",
+            JOptionPane.YES_NO_OPTION)
+
+        if (response != JOptionPane.YES_OPTION) return
+
+        SwingWorker worker = new SwingWorker<Map, String>() {
+            protected Map doInBackground() {
+                // Get sample IDs
+                List<String> testIds = elementCache.keySet().take(50).toList()
+
+                if (testIds.size() < 10) {
+                    return [error: "Not enough elements in cache. Please load a project first."]
+                }
+
+                // Clear from cache for fair test
+                testIds.each { elementCache.remove(it) }
+
+                publish("Testing sequential loading...")
+                long sequentialStart = System.currentTimeMillis()
+                testIds.each { id ->
+                    try {
+                        getElement(id)
+                    } catch (Exception e) {}
+                }
+                long sequentialTime = System.currentTimeMillis() - sequentialStart
+
+                // Clear cache again
+                testIds.each { elementCache.remove(it) }
+
+                publish("Testing parallel loading...")
+                long parallelStart = System.currentTimeMillis()
+                GParsPool.withPool(8) {
+                    testIds.eachParallel { id ->
+                        try {
+                            getElement(id)
+                        } catch (Exception e) {}
+                    }
+                }
+                long parallelTime = System.currentTimeMillis() - parallelStart
+
+                double speedup = ((sequentialTime - parallelTime) / (double)sequentialTime) * 100
+
+                return [
+                    sequential: sequentialTime,
+                    parallel: parallelTime,
+                    speedup: speedup,
+                    count: testIds.size()
+                ]
+            }
+
+            protected void process(List<String> chunks) {
+                if (!chunks.isEmpty()) {
+                    setStatus(chunks.last())
+                }
+            }
+
+            protected void done() {
+                try {
+                    Map results = get()
+
+                    if (results.error) {
+                        JOptionPane.showMessageDialog(SysMLv2ExplorerFrame.this,
+                            results.error,
+                            "Test Error",
+                            JOptionPane.ERROR_MESSAGE)
+                        return
+                    }
+
+                    String message = String.format(
+                        "Performance Test Results\n" +
+                        "Elements loaded: %d\n\n" +
+                        "Sequential: %d ms\n" +
+                        "Parallel:   %d ms\n\n" +
+                        "Speedup: %.1f%%\n" +
+                        "(Target: 67-83%% faster)",
+                        results.count,
+                        results.sequential,
+                        results.parallel,
+                        results.speedup
+                    )
+
+                    JOptionPane.showMessageDialog(SysMLv2ExplorerFrame.this,
+                        message,
+                        "Performance Results",
+                        JOptionPane.INFORMATION_MESSAGE)
+
+                    setStatus("Performance test complete: ${results.speedup}% speedup")
+                    logDiagnostic("Performance test: ${results}")
+                } catch (Exception e) {
+                    logError("compareLoadPerformance", e)
+                }
+            }
+        }
+        worker.execute()
     }
 
     /**
