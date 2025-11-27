@@ -39,6 +39,8 @@ import javax.swing.tree.*
 import javax.swing.event.*
 import javax.swing.border.*
 import javax.swing.table.*
+import javax.swing.event.HyperlinkListener
+import javax.swing.event.HyperlinkEvent
 import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Component
@@ -137,7 +139,7 @@ class SysMLv2ExplorerFrame extends JFrame {
     JComboBox<CommitItem> commitCombo
     JTree elementTree
     DefaultTreeModel treeModel
-    JTextArea propertiesArea
+    JEditorPane propertiesPane
     JTextArea sysmlTextArea
     JLabel statusLabel
     JSplitPane mainSplit
@@ -307,14 +309,28 @@ class SysMLv2ExplorerFrame extends JFrame {
         // Right panel - Details
         JPanel detailsPanel = new JPanel(new BorderLayout())
 
-        // Properties panel
+        // Properties panel (HTML with clickable links)
         JPanel propsPanel = new JPanel(new BorderLayout())
         propsPanel.border = BorderFactory.createTitledBorder("Properties")
 
-        propertiesArea = new JTextArea()
-        propertiesArea.editable = false
-        propertiesArea.font = new Font("Monospaced", Font.PLAIN, 12)
-        JScrollPane propsScroll = new JScrollPane(propertiesArea)
+        propertiesPane = new JEditorPane()
+        propertiesPane.contentType = "text/html"
+        propertiesPane.editable = false
+        propertiesPane.putClientProperty(JEditorPane.HONOR_DISPLAY_PROPERTIES, Boolean.TRUE)
+        propertiesPane.font = new Font("SansSerif", Font.PLAIN, 12)
+
+        // Add hyperlink listener for clickable @id references
+        propertiesPane.addHyperlinkListener(new HyperlinkListener() {
+            void hyperlinkUpdate(HyperlinkEvent e) {
+                if (e.eventType == HyperlinkEvent.EventType.ACTIVATED) {
+                    String elementId = e.description
+                    logDiagnostic("Hyperlink clicked: ${elementId}")
+                    jumpToElement(elementId)
+                }
+            }
+        })
+
+        JScrollPane propsScroll = new JScrollPane(propertiesPane)
         propsPanel.add(propsScroll, BorderLayout.CENTER)
 
         // SysML Text panel
@@ -1013,55 +1029,61 @@ class SysMLv2ExplorerFrame extends JFrame {
     }
 
     void displayElementProperties(Map element) {
-        StringBuilder sb = new StringBuilder()
+        StringBuilder html = new StringBuilder()
 
-        sb.append("Type: ${element['@type']}\n")
-        sb.append("ID: ${element['@id']}\n")
-        sb.append("Name: ${element['name'] ?: '(unnamed)'}\n")
-        sb.append("Qualified Name: ${element['qualifiedName'] ?: 'N/A'}\n")
-        sb.append("Short Name: ${element['shortName'] ?: 'N/A'}\n")
-        sb.append("Element ID: ${element['elementId'] ?: 'N/A'}\n")
+        html.append("<html><body style='font-family: SansSerif; font-size: 11px; margin: 5px;'>")
+
+        // Basic properties
+        addPropertyRow(html, "Type", element['@type'])
+        addPropertyRow(html, "ID", getElementLink(element['@id'], element['@id']?.take(12) + "..."))
+        addPropertyRow(html, "Name", element['name'] ?: '<i>(unnamed)</i>')
+        addPropertyRow(html, "Qualified Name", element['qualifiedName'] ?: '<i>N/A</i>')
+        addPropertyRow(html, "Short Name", element['shortName'] ?: '<i>N/A</i>')
+        addPropertyRow(html, "Element ID", element['elementId'] ?: '<i>N/A</i>')
 
         // Documentation
         if (element['documentation']) {
-            sb.append("\n--- Documentation ---\n")
-            sb.append("${element['documentation']}\n")
+            html.append("<br><b>Documentation:</b><br>")
+            html.append("<div style='background-color: #f0f0f0; padding: 5px; margin: 3px 0;'>")
+            html.append(element['documentation'].replaceAll("\n", "<br>"))
+            html.append("</div>")
         }
 
         // SysML v2 Specific Properties
-        sb.append("\n--- SysML v2 Properties ---\n")
+        html.append("<br><b>SysML v2 Properties:</b><br>")
         if (element['direction']) {
-            sb.append("Direction: ${element['direction']}\n")
+            addPropertyRow(html, "Direction", element['direction'])
         }
         if (element['multiplicity']) {
             def mult = element['multiplicity']
             def lower = mult['lowerBound'] ?: 0
             def upper = mult['upperBound'] ?: '*'
-            sb.append("Multiplicity: [${lower}..${upper}]\n")
+            addPropertyRow(html, "Multiplicity", "[${lower}..${upper}]")
         }
         if (element['declaredType'] || element['type']) {
             def typeRef = element['declaredType'] ?: element['type']
-            sb.append("Type: ${typeRef}\n")
+            addPropertyRow(html, "Type", getElementLink(typeRef))
         }
 
-        sb.append("\n--- Flags ---\n")
-        sb.append("Is Abstract: ${element['isAbstract'] ?: 'false'}\n")
-        sb.append("Is Library Element: ${element['isLibraryElement'] ?: 'false'}\n")
-        sb.append("Is Implied Included: ${element['isImpliedIncluded'] ?: 'false'}\n")
+        // Flags
+        html.append("<br><b>Flags:</b><br>")
+        addPropertyRow(html, "Is Abstract", element['isAbstract'] ?: 'false')
+        addPropertyRow(html, "Is Library Element", element['isLibraryElement'] ?: 'false')
+        addPropertyRow(html, "Is Implied Included", element['isImpliedIncluded'] ?: 'false')
         if (element['isComposite'] != null) {
-            sb.append("Is Composite: ${element['isComposite']}\n")
+            addPropertyRow(html, "Is Composite", element['isComposite'])
         }
         if (element['isReadOnly'] != null) {
-            sb.append("Is Read Only: ${element['isReadOnly']}\n")
+            addPropertyRow(html, "Is Read Only", element['isReadOnly'])
         }
         if (element['isDerived'] != null) {
-            sb.append("Is Derived: ${element['isDerived']}\n")
+            addPropertyRow(html, "Is Derived", element['isDerived'])
         }
         if (element['isOrdered'] != null) {
-            sb.append("Is Ordered: ${element['isOrdered']}\n")
+            addPropertyRow(html, "Is Ordered", element['isOrdered'])
         }
         if (element['isUnique'] != null) {
-            sb.append("Is Unique: ${element['isUnique']}\n")
+            addPropertyRow(html, "Is Unique", element['isUnique'])
         }
 
         // Specializations
@@ -1069,10 +1091,10 @@ class SysMLv2ExplorerFrame extends JFrame {
             def specs = element['specialization'] instanceof List ?
                 element['specialization'] : [element['specialization']]
             if (specs.size() > 0) {
-                sb.append("\n--- Specializations ---\n")
+                html.append("<br><b>Specializations:</b><br>")
                 specs.each { spec ->
                     if (spec['general']) {
-                        sb.append("Specializes: ${spec['general']}\n")
+                        html.append("&nbsp;&nbsp;:&gt; ${getElementLink(spec['general'])}<br>")
                     }
                 }
             }
@@ -1083,10 +1105,10 @@ class SysMLv2ExplorerFrame extends JFrame {
             def redefs = element['redefinition'] instanceof List ?
                 element['redefinition'] : [element['redefinition']]
             if (redefs.size() > 0) {
-                sb.append("\n--- Redefinitions ---\n")
+                html.append("<br><b>Redefinitions:</b><br>")
                 redefs.each { redef ->
                     if (redef['redefinedFeature']) {
-                        sb.append("Redefines: ${redef['redefinedFeature']}\n")
+                        html.append("&nbsp;&nbsp;:&gt;&gt; ${getElementLink(redef['redefinedFeature'])}<br>")
                     }
                 }
             }
@@ -1097,19 +1119,135 @@ class SysMLv2ExplorerFrame extends JFrame {
         List ownedFeature = element['ownedFeature'] ?: []
         List ownedRelationship = element['ownedRelationship'] ?: []
 
-        sb.append("\n--- Owned Elements ---\n")
-        sb.append("Owned Members: ${ownedMember.size()}\n")
-        sb.append("Owned Features: ${ownedFeature.size()}\n")
-        sb.append("Owned Relationships: ${ownedRelationship.size()}\n")
+        html.append("<br><b>Owned Elements:</b><br>")
+        addPropertyRow(html, "Owned Members", ownedMember.size())
+        addPropertyRow(html, "Owned Features", ownedFeature.size())
+        addPropertyRow(html, "Owned Relationships", ownedRelationship.size())
 
         // Owner info
         if (element['owner']) {
-            sb.append("\n--- Owner ---\n")
-            sb.append("Owner ID: ${element['owner']['@id']}\n")
+            html.append("<br><b>Owner:</b><br>")
+            html.append("&nbsp;&nbsp;${getElementLink(element['owner'])}<br>")
         }
 
-        propertiesArea.text = sb.toString()
-        propertiesArea.caretPosition = 0
+        html.append("</body></html>")
+
+        propertiesPane.text = html.toString()
+        propertiesPane.caretPosition = 0
+    }
+
+    /**
+     * Helper method to add a property row to HTML
+     */
+    void addPropertyRow(StringBuilder html, String label, def value) {
+        html.append("<b>${label}:</b> ${value}<br>")
+    }
+
+    /**
+     * Convert an element reference to an HTML link
+     * If the element is in cache, shows name; otherwise shows ID
+     */
+    String getElementLink(def elementRef, String displayText = null) {
+        if (!elementRef) return '<i>None</i>'
+
+        // Handle string ID
+        if (elementRef instanceof String) {
+            String elementId = elementRef
+            String label = displayText ?: getElementLabel(elementId)
+            return "<a href='${elementId}'>${label}</a>"
+        }
+
+        // Handle Map with @id
+        if (elementRef instanceof Map && elementRef['@id']) {
+            String elementId = elementRef['@id']
+            String label = displayText ?: getElementLabel(elementId)
+            return "<a href='${elementId}'>${label}</a>"
+        }
+
+        return '<i>Unknown</i>'
+    }
+
+    /**
+     * Get display label for an element ID (name if in cache, or short ID)
+     */
+    String getElementLabel(String elementId) {
+        Map cached = elementCache[elementId]
+        if (cached) {
+            String name = cached['name'] ?: cached['declaredName']
+            if (name) {
+                return "${name} (${elementId.take(8)}...)"
+            }
+        }
+        return "${elementId.take(12)}..."
+    }
+
+    /**
+     * Jump to an element in the tree by its ID
+     * Loads the element if not in cache, searches the tree, and selects the node
+     */
+    void jumpToElement(String elementId) {
+        try {
+            logDiagnostic("jumpToElement: ${elementId}")
+
+            // Load element if not in cache
+            if (!elementCache.containsKey(elementId)) {
+                Map element = getElement(elementId)
+                if (!element) {
+                    JOptionPane.showMessageDialog(this,
+                        "Element not found: ${elementId.take(12)}...",
+                        "Navigation Error",
+                        JOptionPane.WARNING_MESSAGE)
+                    return
+                }
+            }
+
+            // Find the node in the tree
+            TreePath path = findNodeByElementId(elementTree.model.root as ElementTreeNode, elementId)
+
+            if (path) {
+                elementTree.selectionPath = path
+                elementTree.scrollPathToVisible(path)
+                logDiagnostic("Successfully navigated to element: ${elementId}")
+            } else {
+                JOptionPane.showMessageDialog(this,
+                    "Element not currently visible in tree.\n" +
+                    "Try expanding parent nodes first.",
+                    "Navigation",
+                    JOptionPane.INFORMATION_MESSAGE)
+                logDiagnostic("Element not found in tree: ${elementId}")
+            }
+        } catch (Exception e) {
+            logError("jumpToElement", e)
+            JOptionPane.showMessageDialog(this,
+                "Error navigating to element:\n${e.message}",
+                "Navigation Error",
+                JOptionPane.ERROR_MESSAGE)
+        }
+    }
+
+    /**
+     * Recursively search tree for a node with the given element ID
+     * Returns TreePath if found, null otherwise
+     */
+    TreePath findNodeByElementId(ElementTreeNode node, String targetId) {
+        // Check current node
+        Map element = node.element
+        if (element && element['@id'] == targetId) {
+            return new TreePath(node.path)
+        }
+
+        // Search children
+        for (int i = 0; i < node.childCount; i++) {
+            TreeNode child = node.getChildAt(i)
+            if (child instanceof ElementTreeNode) {
+                TreePath foundPath = findNodeByElementId(child, targetId)
+                if (foundPath) {
+                    return foundPath
+                }
+            }
+        }
+
+        return null
     }
 
     void displaySysmlText(Map element) {
